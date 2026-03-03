@@ -19,14 +19,6 @@ import (
 
 const pipeName = `\\.\pipe\mpv-subs`
 
-// Accept the video directory as a command-line argument, or use the current directory if not provided
-func getVideoDir() string {
-	if len(os.Args) > 1 {
-		return os.Args[1]
-	}
-	return "."
-}
-
 // ======================================================
 // Subtitle structures
 // ======================================================
