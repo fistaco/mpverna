@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -200,7 +201,7 @@ func loadTracks(trackList []interface{}, videoDir string) {
 	}
 
 	if len(tracks) == 0 {
-		log.Fatal("No external SRT subtitles found")
+		return
 	}
 
 	// Chinese default else first
@@ -214,6 +215,20 @@ func loadTracks(trackList []interface{}, videoDir string) {
 		}
 	}
 	activeTrack = 0
+}
+
+// Generates an SRT file using Whisper text-to-speech for the given language and video file
+func generateTtsSrt(videoPath string, language string) {
+	// whisper.exe $1 --model turbo --language Chinese --output_format srt --device cuda --fp16 True
+	log.Println("Generating subtitles for ", videoPath)
+	os.Exit(1)
+
+	cmd := exec.Command("whisper", videoPath, "--model", "turbo", "--language", language, "--output_format", "srt", "--device", "cuda", "--fp16", "True", "--output_dir", filepath.Dir(videoPath))
+	err := cmd.Run()
+
+	if err != nil {
+		log.Fatal("Failed to generate SRT file using Whisper:", err)
+	}
 }
 
 func listenMPV() {
@@ -238,6 +253,12 @@ func listenMPV() {
 	videoDir := filepath.Dir(absVideoPath)
 	raw := getProperty("track-list").([]interface{})
 	loadTracks(raw, videoDir)
+
+	if len(tracks) == 0 {
+		log.Println("No subtitle tracks found, attempting to generate using Whisper...")
+		generateTtsSrt(absVideoPath, "Chinese")
+		loadTracks(getProperty("track-list").([]interface{}), videoDir)
+	}
 
 	send("observe_property", 1, "time-pos")
 
@@ -311,6 +332,7 @@ sel.onchange=()=>ws.send("SET:"+sel.value);
 // ======================================================
 
 func main() {
+	// The command `mpv.exe --input-ipc-server=\\.\pipe\mpv-subs video.mkv` should already be running
 	go listenMPV()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
