@@ -20,6 +20,8 @@ import (
 
 const pipeName = `\\.\pipe\mpv-subs`
 
+var targetLanguage = "Chinese"
+
 // ======================================================
 // Subtitle structures
 // ======================================================
@@ -31,10 +33,12 @@ type Line struct {
 }
 
 type Track struct {
-	Name string
-	Lang string
-	File string
-	Subs []Line
+	Name          string
+	Lang          string
+	File          string
+	Subs          []Line
+	IsExternal    bool
+	SubTrackIndex int
 }
 
 var tracks []Track
@@ -190,48 +194,82 @@ func loadTracks(trackList []interface{}, videoDir string) {
 			continue
 		}
 
-		file, ok := m["external-filename"].(string)
-		if !ok {
-			continue
-		}
+		// Currently only supports external subtitle files, embedded subs would require diferent logic
+		external_filename, isExternal := m["external-filename"].(string)
+		// if !ok {
+		// 	continue
+		// }
 
-		if !filepath.IsAbs(file) {
-			file = filepath.Join(videoDir, file)
+		if !filepath.IsAbs(external_filename) {
+			external_filename = filepath.Join(videoDir, external_filename)
 		}
 
 		tracks = append(tracks, Track{
-			Name: fmt.Sprint(m["title"]),
-			Lang: fmt.Sprint(m["lang"]),
-			File: file,
-			Subs: loadSRT(file),
+			Name:          fmt.Sprint(m["title"]),
+			Lang:          fmt.Sprint(m["lang"]),
+			File:          external_filename,
+			Subs:          loadSRT(external_filename),
+			IsExternal:    isExternal,
+			SubTrackIndex: int(m["ff-index"].(float64)),
 		})
 	}
+}
 
+func selectActiveTrack(language string) {
+	log.Println("Selecting active subtitle track to display on the web page...")
 	if len(tracks) == 0 {
+		log.Println("No subtitle tracks available to select.")
 		return
 	}
 
-	// Chinese default else first
+	videoPath := getProperty("path").(string)
+	// Select a track if it was previously generated or converted by this server for the target language
+	generatedSubtitleFilename := constructGeneratedSrtFilename(videoPath, language)
+	convertedSubtitleFilename := constructConvertedSrtFilename(videoPath, language)
 	for i, t := range tracks {
-		l := strings.ToLower(t.Lang)
-		if strings.HasPrefix(l, "zh") ||
-			strings.HasPrefix(l, "chi") ||
-			strings.HasPrefix(l, "zho") {
+		if t.Name == generatedSubtitleFilename || t.Name == convertedSubtitleFilename {
 			activeTrack = i
 			return
 		}
 	}
+
+	// If an embedded track matches the target language, convert it to SRT and load that SRT file as a new track
+	for _, t := range tracks {
+		l := strings.ToLower(t.Lang)
+		// TODO: Support other languages and language code formats
+		if strings.HasPrefix(l, "zh") || strings.HasPrefix(l, "chi") || strings.HasPrefix(l, "zho") {
+			convertEmbeddedSubToSrt(videoPath, language, t.SubTrackIndex)
+			convertedSrtPath := filepath.Join(filepath.Dir(videoPath), convertedSubtitleFilename)
+			tracks = append(tracks, Track{
+				Name:          convertedSubtitleFilename,
+				Lang:          language,
+				File:          convertedSrtPath,
+				Subs:          loadSRT(convertedSrtPath),
+				IsExternal:    true,
+				SubTrackIndex: -1,
+			})
+			selectActiveTrack(language)
+		}
+	}
+
+	// Check if any of the external Track objects' SRT files match the target language
+	// TODO: implement using an external library to detect SRT subtitle language. Ignore any existing SRTs for now.
+
+	// No embedded subs or external SRTs matching the target language were found, so generate new subs and select those
+
+	// Use the first external track by default if no better options are found
+	for i, t := range tracks {
+		if t.IsExternal {
+			activeTrack = i
+			return
+		}
+	}
+
+	// Fall back to 0 if all else fails
 	activeTrack = 0
 }
 
-// Generates an SRT file using Whisper text-to-speech for the given language and video file
-func generateTtsSrt(videoPath string, language string) {
-	// whisper.exe $1 --model turbo --language Chinese --output_format srt --device cuda --fp16 True
-	os.Exit(1)
-
-	cmd := exec.Command("whisper", videoPath, "--model", "turbo", "--language", language, "--output_format", "srt", "--device", "cuda", "--fp16", "True", "--output_dir", filepath.Dir(videoPath))
-	log.Println(cmd.String())
-
+func runCmdWithOutputStreams(cmd *exec.Cmd) error {
 	cmd.Env = append(os.Environ(), "PYTHONUTF8=1")
 	stdout, err := cmd.StdoutPipe()
 	stderr, err := cmd.StderrPipe()
@@ -251,18 +289,74 @@ func generateTtsSrt(videoPath string, language string) {
 	}()
 	cmd.Wait()
 
+	return err
+}
+
+// Generates an SRT file using Whisper text-to-speech for the given language and video file
+func generateTtsSrt(videoPath string, language string) {
+	cmd := exec.Command("whisper", videoPath, "--model", "turbo", "--language", language, "--output_format", "srt", "--device", "cuda", "--fp16", "True", "--output_dir", filepath.Dir(videoPath))
+	err := runCmdWithOutputStreams(cmd)
+
 	if err != nil {
 		log.Fatal("Failed to generate SRT file using Whisper:", err)
 	}
 
+	subsFilepath := strings.Replace(videoPath, ".mkv", ".srt", 1)
+	if _, err := os.Stat(subsFilepath); os.IsNotExist(err) {
+		log.Fatal("Whisper did not generate the expected SRT file:", subsFilepath)
+	}
+	// send("sub-add", subsFilepath)
+
 	subTrack := Track{
 		Name: "Whisper TTS",
 		Lang: "zh",
-		File: "",  // The generated SRT file path should be set here
-		Subs: nil, // The loaded subtitles from the generated SRT file should be set here
+		File: subsFilepath, // TODO: Test path correctness
+		Subs: loadSRT(subsFilepath),
 	}
 	tracks = append(tracks, subTrack)
 	activeTrack = len(tracks) - 1
+}
+
+func convertEmbeddedSubToSrt(videoPath string, language string, subTrackIndex int) {
+	log.Println("Converting embedded subtitle track to SRT using ffmpeg...")
+
+	dir := filepath.Dir(videoPath)
+	convertedSrtFilepath := filepath.Join(dir, constructConvertedSrtFilename(videoPath, language))
+
+	cmd := exec.Command("ffmpeg", "-i", videoPath, "-map", "0:s:"+fmt.Sprint(subTrackIndex), convertedSrtFilepath)
+	err := runCmdWithOutputStreams(cmd)
+	if err != nil {
+		log.Printf("Failed to convert embedded subtitle to SRT: %v", err)
+	}
+}
+
+// Constructs a filename for an SRT file generated by this project based on the video filename and
+// language. The format is "VIDEONAME-LANGUAGE-GENERATED.srt" and does not contain the full filepath.
+func constructGeneratedSrtFilename(videoPath string, language string) string {
+	base := filepath.Base(videoPath)
+	base_without_ext := strings.TrimSuffix(base, filepath.Ext(base))
+	language_normalized := strings.ToUpper(language)
+
+	return base_without_ext + "-" + language_normalized + "-GENERATED.srt"
+}
+
+// Constructs a filename for an SRT file converted from an embedded subtitle track using ffmpeg
+func constructConvertedSrtFilename(videoPath string, language string) string {
+	base := filepath.Base(videoPath)
+	base_without_ext := strings.TrimSuffix(base, filepath.Ext(base))
+	language_normalized := strings.ToUpper(language)
+
+	return base_without_ext + "-" + language_normalized + "-CONVERTED.srt"
+}
+
+// Determines whether a corresponding .srt subtitle file exists for the given video path and language
+func subFileExists(videoPath string, language string) bool {
+	srtPath := strings.TrimSuffix(videoPath, filepath.Ext(videoPath)) + ".srt"
+	if _, err := os.Stat(srtPath); err == nil {
+		return true
+	}
+
+	return false
 }
 
 func listenMPV() {
@@ -287,11 +381,12 @@ func listenMPV() {
 	videoDir := filepath.Dir(absVideoPath)
 	raw := getProperty("track-list").([]interface{})
 	loadTracks(raw, videoDir)
+	selectActiveTrack(targetLanguage)
 
 	if len(tracks) == 0 {
 		log.Println("No subtitle tracks found, attempting to generate using Whisper...")
-		generateTtsSrt(absVideoPath, "Chinese")
-		// loadTracks(getProperty("track-list").([]interface{}), videoDir)
+		generateTtsSrt(absVideoPath, targetLanguage)
+		loadTracks(getProperty("track-list").([]interface{}), videoDir)
 	}
 
 	send("observe_property", 1, "time-pos")
@@ -365,7 +460,15 @@ sel.onchange=()=>ws.send("SET:"+sel.value);
 
 // ======================================================
 
+func pargseArgs() {
+	if len(os.Args) > 1 {
+		targetLanguage = os.Args[1]
+	}
+}
+
 func main() {
+	pargseArgs()
+
 	// The command `mpv.exe --input-ipc-server=\\.\pipe\mpv-subs video.mkv` should already be running
 	go listenMPV()
 
