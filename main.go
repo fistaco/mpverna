@@ -116,6 +116,14 @@ func findLine(subs []Line, t float64) string {
 	return ""
 }
 
+func linesToString(subs []Line) string {
+	var sb strings.Builder
+	for _, l := range subs {
+		sb.WriteString(fmt.Sprintf("%s\n", l.Text))
+	}
+	return sb.String()
+}
+
 // ======================================================
 // Websocket
 // ======================================================
@@ -219,6 +227,11 @@ func loadTracks(trackList []interface{}, videoDir string) {
 	}
 }
 
+func setActiveTrack(trackIndex int, track Track) {
+	log.Printf("Setting active track to %d (name: %s)", trackIndex, track.Name)
+	activeTrack = trackIndex
+}
+
 func selectActiveTrack(language string) {
 	log.Println("Selecting active subtitle track to display on the web page...")
 	if len(tracks) == 0 {
@@ -226,13 +239,13 @@ func selectActiveTrack(language string) {
 		return
 	}
 
-	videoPath := getProperty("path").(string)
+	videoPath := getFullMpvVideoPath()
 	// Select a track if it was previously generated or converted by this server for the target language
 	generatedSubtitleFilename := constructGeneratedSrtFilename(videoPath, language)
 	convertedSubtitleFilename := constructConvertedSrtFilename(videoPath, language)
 	for i, t := range tracks {
 		if t.Name == generatedSubtitleFilename || t.Name == convertedSubtitleFilename {
-			activeTrack = i
+			setActiveTrack(i, t)
 			return
 		}
 	}
@@ -255,9 +268,6 @@ func selectActiveTrack(language string) {
 			selectActiveTrack(language)
 		}
 	}
-
-	// Check if any of the external Track objects' SRT files match the target language
-	// TODO: implement using an external library to detect SRT subtitle language. Ignore any existing SRTs for now.
 
 	// No embedded subs or external SRTs matching the target language were found, so generate new subs and select those
 	generateTtsSrt(videoPath, language)
@@ -309,8 +319,29 @@ func runCmdWithOutputStreams(cmd *exec.Cmd) error {
 
 // Generates an SRT file using Whisper text-to-speech for the given language and video file
 func generateTtsSrt(videoPath string, language string) {
+	log.Println("Generating SRT file using Whisper text-to-speech...")
+
 	cmd := exec.Command("whisper", videoPath, "--model", "turbo", "--language", language, "--output_format", "srt", "--device", "cuda", "--fp16", "True", "--output_dir", filepath.Dir(videoPath))
-	err := runCmdWithOutputStreams(cmd)
+	log.Printf("Running command %s", strings.Join(cmd.Args, " "))
+	// err := runCmdWithOutputStreams(cmd)
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1")
+	stdout, err := cmd.StdoutPipe()
+	stderr, err := cmd.StderrPipe()
+	cmd.Start()
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			fmt.Println("STDOUT:", scanner.Text())
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			fmt.Println("STDERR:", scanner.Text())
+		}
+	}()
+	cmd.Wait()
 
 	if err != nil {
 		log.Fatal("Failed to generate SRT file using Whisper:", err)
@@ -320,13 +351,19 @@ func generateTtsSrt(videoPath string, language string) {
 	if _, err := os.Stat(subsFilepath); os.IsNotExist(err) {
 		log.Fatal("Whisper did not generate the expected SRT file:", subsFilepath)
 	}
+
+	// Rename the generated file so we can find it later
+	generatedSubtitleFilename := constructGeneratedSrtFilename(videoPath, language)
+	generatedSubtitleFilepath := filepath.Join(filepath.Dir(videoPath), generatedSubtitleFilename)
+	err = os.Rename(subsFilepath, generatedSubtitleFilepath)
+
 	// send("sub-add", subsFilepath)
 
 	subTrack := Track{
 		Name: "Whisper TTS",
 		Lang: "zh",
-		File: subsFilepath, // TODO: Test path correctness
-		Subs: loadSRT(subsFilepath),
+		File: generatedSubtitleFilepath, // TODO: Test path correctness
+		Subs: loadSRT(generatedSubtitleFilepath),
 	}
 	tracks = append(tracks, subTrack)
 	activeTrack = len(tracks) - 1
@@ -374,11 +411,37 @@ func subFileExists(videoPath string, language string) bool {
 	return false
 }
 
+func waitForMPV() {
+	// TODO: Implement
+}
+
+func getFullMpvVideoPath() string {
+	videoPath := getProperty("path").(string)
+	mpvWD := getProperty("working-directory").(string)
+
+	var absVideoPath string
+
+	if filepath.IsAbs(videoPath) {
+		absVideoPath = videoPath
+	} else {
+		absVideoPath = filepath.Join(mpvWD, videoPath)
+	}
+
+	return absVideoPath
+}
+
 func listenMPV() {
 	var err error
 	conn, err = winio.DialPipe(pipeName, nil)
 	if err != nil {
-		log.Fatal(err)
+		// Wait for the pipe to be available if mpv hasn't been launched yet
+		log.Println("Waiting for mpv to launch...")
+		for {
+			conn, err = winio.DialPipe(pipeName, nil)
+			if err != nil {
+				continue
+			}
+		}
 	}
 	reader = bufio.NewReader(conn)
 
@@ -397,12 +460,6 @@ func listenMPV() {
 	raw := getProperty("track-list").([]interface{})
 	loadTracks(raw, videoDir)
 	selectActiveTrack(targetLanguage)
-
-	if len(tracks) == 0 {
-		log.Println("No subtitle tracks found, attempting to generate using Whisper...")
-		generateTtsSrt(absVideoPath, targetLanguage)
-		loadTracks(getProperty("track-list").([]interface{}), videoDir)
-	}
 
 	send("observe_property", 1, "time-pos")
 
