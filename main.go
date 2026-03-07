@@ -22,6 +22,10 @@ const pipeName = `\\.\pipe\mpv-subs`
 
 var targetLanguage = "Chinese"
 
+// maxint
+const generatedSubtitleTrackIndex = -1
+const convertedSubtitleTrackIndex = -2
+
 // ======================================================
 // Subtitle structures
 // ======================================================
@@ -246,7 +250,7 @@ func selectActiveTrack(language string) {
 				File:          convertedSrtPath,
 				Subs:          loadSRT(convertedSrtPath),
 				IsExternal:    true,
-				SubTrackIndex: -1,
+				SubTrackIndex: convertedSubtitleTrackIndex,
 			})
 			selectActiveTrack(language)
 		}
@@ -256,6 +260,17 @@ func selectActiveTrack(language string) {
 	// TODO: implement using an external library to detect SRT subtitle language. Ignore any existing SRTs for now.
 
 	// No embedded subs or external SRTs matching the target language were found, so generate new subs and select those
+	generateTtsSrt(videoPath, language)
+	generatedSubtitleFilepath := filepath.Join(filepath.Dir(videoPath), generatedSubtitleFilename)
+	tracks = append(tracks, Track{
+		Name:          generatedSubtitleFilename,
+		Lang:          language,
+		File:          generatedSubtitleFilepath,
+		Subs:          loadSRT(generatedSubtitleFilepath),
+		IsExternal:    true,
+		SubTrackIndex: generatedSubtitleTrackIndex,
+	})
+	selectActiveTrack(language)
 
 	// Use the first external track by default if no better options are found
 	for i, t := range tracks {
