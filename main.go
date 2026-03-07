@@ -176,6 +176,13 @@ func getProperty(name string) interface{} {
 }
 
 func loadTracks(trackList []interface{}, videoDir string) {
+	// Log initially found tracks
+	log.Printf("Found %d tracks in MPV:\n", len(trackList))
+	for i, t := range trackList {
+		m := t.(map[string]interface{})
+		log.Printf("Track %d: type=%s, title=%s, lang=%s\n", i, m["type"], m["title"], m["lang"])
+	}
+
 	for _, t := range trackList {
 		m := t.(map[string]interface{})
 
@@ -220,15 +227,42 @@ func loadTracks(trackList []interface{}, videoDir string) {
 // Generates an SRT file using Whisper text-to-speech for the given language and video file
 func generateTtsSrt(videoPath string, language string) {
 	// whisper.exe $1 --model turbo --language Chinese --output_format srt --device cuda --fp16 True
-	log.Println("Generating subtitles for ", videoPath)
 	os.Exit(1)
 
 	cmd := exec.Command("whisper", videoPath, "--model", "turbo", "--language", language, "--output_format", "srt", "--device", "cuda", "--fp16", "True", "--output_dir", filepath.Dir(videoPath))
-	err := cmd.Run()
+	log.Println(cmd.String())
+
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1")
+	stdout, err := cmd.StdoutPipe()
+	stderr, err := cmd.StderrPipe()
+	cmd.Start()
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			fmt.Println("STDOUT:", scanner.Text())
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			fmt.Println("STDERR:", scanner.Text())
+		}
+	}()
+	cmd.Wait()
 
 	if err != nil {
 		log.Fatal("Failed to generate SRT file using Whisper:", err)
 	}
+
+	subTrack := Track{
+		Name: "Whisper TTS",
+		Lang: "zh",
+		File: "",  // The generated SRT file path should be set here
+		Subs: nil, // The loaded subtitles from the generated SRT file should be set here
+	}
+	tracks = append(tracks, subTrack)
+	activeTrack = len(tracks) - 1
 }
 
 func listenMPV() {
@@ -257,7 +291,7 @@ func listenMPV() {
 	if len(tracks) == 0 {
 		log.Println("No subtitle tracks found, attempting to generate using Whisper...")
 		generateTtsSrt(absVideoPath, "Chinese")
-		loadTracks(getProperty("track-list").([]interface{}), videoDir)
+		// loadTracks(getProperty("track-list").([]interface{}), videoDir)
 	}
 
 	send("observe_property", 1, "time-pos")
