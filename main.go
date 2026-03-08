@@ -160,7 +160,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(string(msg), "SET:") {
 				id, _ := strconv.Atoi(strings.TrimPrefix(string(msg), "SET:"))
 				if id >= 0 && id < len(tracks) {
-					activeTrack = id
+					setActiveTrack(id, tracks[id])
 				}
 			}
 		}
@@ -270,7 +270,7 @@ func selectActiveTrack(language string) {
 	}
 
 	// No embedded subs or external SRTs matching the target language were found, so generate new subs and select those
-	generateTtsSrt(videoPath, language)
+	err := generateTtsSrt(videoPath, language)
 	generatedSubtitleFilepath := filepath.Join(filepath.Dir(videoPath), generatedSubtitleFilename)
 	tracks = append(tracks, Track{
 		Name:          generatedSubtitleFilename,
@@ -281,17 +281,20 @@ func selectActiveTrack(language string) {
 		SubTrackIndex: generatedSubtitleTrackIndex,
 	})
 	selectActiveTrack(language)
+	if err == nil {
+		return
+	}
 
 	// Use the first external track by default if no better options are found
 	for i, t := range tracks {
 		if t.IsExternal {
-			activeTrack = i
+			setActiveTrack(i, t)
 			return
 		}
 	}
 
 	// Fall back to 0 if all else fails
-	activeTrack = 0
+	setActiveTrack(0, tracks[0])
 }
 
 func runCmdWithOutputStreams(cmd *exec.Cmd) error {
@@ -318,7 +321,7 @@ func runCmdWithOutputStreams(cmd *exec.Cmd) error {
 }
 
 // Generates an SRT file using Whisper text-to-speech for the given language and video file
-func generateTtsSrt(videoPath string, language string) {
+func generateTtsSrt(videoPath string, language string) error {
 	log.Println("Generating SRT file using Whisper text-to-speech...")
 
 	cmd := exec.Command("whisper", videoPath, "--model", "turbo", "--language", language, "--output_format", "srt", "--device", "cuda", "--fp16", "True", "--output_dir", filepath.Dir(videoPath))
@@ -344,12 +347,14 @@ func generateTtsSrt(videoPath string, language string) {
 	cmd.Wait()
 
 	if err != nil {
-		log.Fatal("Failed to generate SRT file using Whisper:", err)
+		log.Printf("Failed to generate SRT file using Whisper: %s", err)
+		return err
 	}
 
 	subsFilepath := strings.Replace(videoPath, ".mkv", ".srt", 1)
 	if _, err := os.Stat(subsFilepath); os.IsNotExist(err) {
-		log.Fatal("Whisper did not generate the expected SRT file:", subsFilepath)
+		log.Printf("Whisper did not generate the expected SRT file: %s", subsFilepath)
+		return err
 	}
 
 	// Rename the generated file so we can find it later
@@ -358,15 +363,7 @@ func generateTtsSrt(videoPath string, language string) {
 	err = os.Rename(subsFilepath, generatedSubtitleFilepath)
 
 	// send("sub-add", subsFilepath)
-
-	subTrack := Track{
-		Name: "Whisper TTS",
-		Lang: "zh",
-		File: generatedSubtitleFilepath, // TODO: Test path correctness
-		Subs: loadSRT(generatedSubtitleFilepath),
-	}
-	tracks = append(tracks, subTrack)
-	activeTrack = len(tracks) - 1
+	return err
 }
 
 func convertEmbeddedSubToSrt(videoPath string, language string, subTrackIndex int) {
