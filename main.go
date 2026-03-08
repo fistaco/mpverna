@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/gorilla/websocket"
@@ -114,14 +115,6 @@ func findLine(subs []Line, t float64) string {
 		}
 	}
 	return ""
-}
-
-func linesToString(subs []Line) string {
-	var sb strings.Builder
-	for _, l := range subs {
-		sb.WriteString(fmt.Sprintf("%s\n", l.Text))
-	}
-	return sb.String()
 }
 
 // ======================================================
@@ -435,25 +428,18 @@ func listenMPV() {
 		log.Println("Waiting for mpv to launch...")
 		for {
 			conn, err = winio.DialPipe(pipeName, nil)
-			if err != nil {
-				continue
+			if err == nil {
+				break
 			}
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
+	log.Println("Found MPV IPC pipe")
 	reader = bufio.NewReader(conn)
 
-	videoPath := getProperty("path").(string)
-	mpvWD := getProperty("working-directory").(string)
-
-	var absVideoPath string
-
-	if filepath.IsAbs(videoPath) {
-		absVideoPath = videoPath
-	} else {
-		absVideoPath = filepath.Join(mpvWD, videoPath)
-	}
-
+	absVideoPath := getFullMpvVideoPath()
 	videoDir := filepath.Dir(absVideoPath)
+
 	raw := getProperty("track-list").([]interface{})
 	loadTracks(raw, videoDir)
 	selectActiveTrack(targetLanguage)
