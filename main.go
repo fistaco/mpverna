@@ -497,10 +497,12 @@ ws.onmessage=e=>{
 	if(e.data.startsWith("TRACKS:")){
 		const tracks=JSON.parse(e.data.slice(7));
 		tracks.forEach((t,i)=>{
-			const o=document.createElement("option");
-			o.value=i;
-			o.textContent=(t.lang||"")+" "+(t.name||"");
-			sel.appendChild(o);
+			if (t.IsExternal) {
+				const o=document.createElement("option");
+				o.value=i;
+				o.textContent=(t.Lang||"")+" "+(t.Name||"");
+				sel.appendChild(o);
+			}
 		});
 		return;
 	}
