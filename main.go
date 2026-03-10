@@ -201,9 +201,6 @@ func loadTracks(trackList []interface{}, videoDir string) {
 
 		// Currently only supports external subtitle files, embedded subs would require diferent logic
 		external_filename, isExternal := m["external-filename"].(string)
-		// if !ok {
-		// 	continue
-		// }
 
 		if !filepath.IsAbs(external_filename) {
 			external_filename = filepath.Join(videoDir, external_filename)
@@ -355,7 +352,6 @@ func generateTtsSrt(videoPath string, language string) error {
 	generatedSubtitleFilepath := filepath.Join(filepath.Dir(videoPath), generatedSubtitleFilename)
 	err = os.Rename(subsFilepath, generatedSubtitleFilepath)
 
-	// send("sub-add", subsFilepath)
 	return err
 }
 
@@ -389,20 +385,6 @@ func constructConvertedSrtFilename(videoPath string, language string) string {
 	language_normalized := strings.ToUpper(language)
 
 	return base_without_ext + "-" + language_normalized + "-CONVERTED.srt"
-}
-
-// Determines whether a corresponding .srt subtitle file exists for the given video path and language
-func subFileExists(videoPath string, language string) bool {
-	srtPath := strings.TrimSuffix(videoPath, filepath.Ext(videoPath)) + ".srt"
-	if _, err := os.Stat(srtPath); err == nil {
-		return true
-	}
-
-	return false
-}
-
-func waitForMPV() {
-	// TODO: Implement
 }
 
 func getFullMpvVideoPath() string {
@@ -534,6 +516,6 @@ func main() {
 	})
 	http.HandleFunc("/ws", wsHandler)
 
-	log.Println("http://localhost:8080")
+	log.Println("Browse to http://localhost:8080")
 	http.ListenAndServe(":8080", nil)
 }
