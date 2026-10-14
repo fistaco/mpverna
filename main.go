@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -499,22 +500,63 @@ sel.onchange=()=>ws.send("SET:"+sel.value);
 
 // ======================================================
 
-func pargseArgs() {
-	if len(os.Args) > 1 {
-		targetLanguage = os.Args[1]
+func parseArgs() (string, string) {
+	if len(os.Args) < 2 {
+		log.Fatalf("Usage: %s <video-file> [language]", os.Args[0])
+	}
+
+	videoPath, err := filepath.Abs(os.Args[1])
+	if err != nil {
+		log.Fatalf("Failed to resolve video file path: %v", err)
+	}
+
+	language := targetLanguage
+	if len(os.Args) > 2 {
+		language = os.Args[2]
+	}
+
+	return videoPath, language
+}
+
+func launchMPV(videoPath string) error {
+	cmd := exec.Command("mpv", "--input-ipc-server="+pipeName, videoPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
+}
+
+func openBrowser(url string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("cmd", "/c", "start", "", url).Start()
+	case "darwin":
+		return exec.Command("open", url).Start()
+	default:
+		return exec.Command("xdg-open", url).Start()
 	}
 }
 
 func main() {
-	pargseArgs()
+	videoPath, language := parseArgs()
+	targetLanguage = language
 
-	// The command `mpv.exe --input-ipc-server=\\.\pipe\mpv-subs video.mkv` should already be running
+	if err := launchMPV(videoPath); err != nil {
+		log.Fatalf("Failed to start mpv: %v", err)
+	}
+
 	go listenMPV()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, page)
 	})
 	http.HandleFunc("/ws", wsHandler)
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := openBrowser("http://localhost:8080"); err != nil {
+			log.Printf("Failed to open browser automatically: %v", err)
+		}
+	}()
 
 	log.Println("Browse to http://localhost:8080")
 	http.ListenAndServe(":8080", nil)
